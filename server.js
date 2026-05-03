@@ -46,6 +46,24 @@ app.post('/webhook', (req, res) => {
   events.forEach(handleLineEvent);
 });
 
+app.get('/admin/status', (req, res) => {
+  res.json({
+    status: 'running',
+    monitorAreas: Object.values(MONITOR_AREAS),
+    typhoonState: {
+      approachNotified: typhoonState.approachNotified,
+      passedNotified: typhoonState.passedNotified,
+      notifiedAt: typhoonState.notifiedAt,
+    },
+    uptime: `${Math.floor(process.uptime())}秒`,
+    timestamp: now(),
+  });
+});
+
+app.get('/admin/preview/pre', (req, res) => {
+  res.json(createApproachFlex());
+});
+
 function handleLineEvent(event) {
   if (event.type === 'message' && event.message?.type === 'text') {
     const text = event.message.text;
