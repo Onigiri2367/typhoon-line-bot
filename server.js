@@ -61,7 +61,7 @@ app.get('/admin/status', (req, res) => {
 });
 
 app.get('/admin/preview/pre', (req, res) => {
-  res.json(createApproachFlex());
+  res.json(createApproachFlex().contents);
 });
 
 function handleLineEvent(event) {
