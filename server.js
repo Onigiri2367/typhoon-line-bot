@@ -64,6 +64,25 @@ app.get('/admin/preview/pre', (req, res) => {
   res.json(createApproachFlex().contents);
 });
 
+// テスト送信エンドポイント
+app.get('/admin/test/approach', async (req, res) => {
+  try {
+    await broadcastMessage(createApproachFlex());
+    res.json({ success: true, message: '台風接近通知を送信しました' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/admin/test/passed', async (req, res) => {
+  try {
+    await broadcastMessage(createPassedFlex());
+    res.json({ success: true, message: '台風通過通知を送信しました' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 function handleLineEvent(event) {
   if (event.type === 'message' && event.message?.type === 'text') {
     const text = event.message.text;
