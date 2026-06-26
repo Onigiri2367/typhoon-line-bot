@@ -79,6 +79,20 @@ app.get('/admin/test/passed', async (req, res) => {
   }
 });
 
+// 気象庁の実データから現在の台風情報を取得してテスト送信
+app.get('/admin/test/current', async (req, res) => {
+  try {
+    const summary = await fetchRelevantTyphoonSummary();
+    if (!summary) {
+      return res.json({ success: false, message: '現在、宮崎県に関係する台風は発生していません' });
+    }
+    await broadcastMessage(createApproachFlex(summary));
+    res.json({ success: true, message: '現在の台風情報を送信しました', summary });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 function handleLineEvent(event) {
   if (event.type === 'message' && event.message?.type === 'text') {
     const text = event.message.text;
@@ -122,6 +136,60 @@ function hasTyphoonWarning(warningData) {
   return false;
 }
 
+// ─── 台風実況データ → 文章化 ────────────────────────────────────────────────────
+// 宮崎県に関係する台風（実況または予報経路に「宮崎」「鹿児島」「奄美」「九州」を含む）を1件取得し、要約文を生成する
+const MIYAZAKI_KEYWORDS = ['宮崎', '鹿児島', '奄美', '九州'];
+
+async function fetchRelevantTyphoonSummary() {
+  const { data: targets } = await axios.get(
+    'https://www.jma.go.jp/bosai/typhoon/data/targetTc.json',
+    { timeout: 10000 }
+  );
+  if (!Array.isArray(targets) || targets.length === 0) return null;
+
+  for (const t of targets) {
+    let specs;
+    try {
+      const res = await axios.get(
+        `https://www.jma.go.jp/bosai/typhoon/data/${t.tropicalCyclone}/specifications.json`,
+        { timeout: 10000 }
+      );
+      specs = res.data;
+    } catch (err) {
+      console.error(`[台風詳細取得失敗] ${t.tropicalCyclone}: ${err.message}`);
+      continue;
+    }
+
+    const title = specs.find((s) => s.part === 'title');
+    const analysis = specs.find((s) => s.part?.jp === '実況');
+    if (!title || !analysis) continue;
+
+    const nearMiyazaki = specs.find(
+      (s) => s.location && MIYAZAKI_KEYWORDS.some((kw) => s.location.includes(kw))
+    );
+    if (!nearMiyazaki) continue; // この台風は宮崎と無関係なのでスキップ
+
+    const num = title.typhoonNumber;
+    const name = title.name?.jp || '';
+    const loc = analysis.location || '海上';
+    const pressure = analysis.pressure;
+    const wind = analysis.maximumWind?.sustained?.['m/s'];
+    const gust = analysis.maximumWind?.gust?.['m/s'];
+    const course = analysis.course;
+    const speed = analysis.speed?.['km/h'];
+
+    let text = `台風第${num}号「${name}」は現在${loc}付近を${course}へ時速${speed}kmで進んでいます。中心気圧${pressure}hPa、最大風速${wind}m/s（最大瞬間風速${gust}m/s）。`;
+    if (nearMiyazaki.advancedHours > 0) {
+      text += `${nearMiyazaki.advancedHours}時間後には${nearMiyazaki.location}付近に達する見込みです。`;
+    }
+    text += '宮崎県への影響に注意し、早めの備えをお願いします。';
+
+    return { num, name, text, pressure, wind, gust, course, speed, location: loc };
+  }
+
+  return null;
+}
+
 // ─── 監視メインロジック ────────────────────────────────────────────────────────
 async function checkTyphoon() {
   console.log(`[${now()}] 台風監視チェック開始`);
@@ -138,8 +206,12 @@ async function checkTyphoon() {
   }
 
   if (approachDetected && !typhoonState.approachNotified) {
-    // 台風接近 → 接近メッセージ送信
-    await broadcastMessage(createApproachFlex());
+    // 台風接近 → 接近メッセージ送信（実況データから要約文を生成）
+    const summary = await fetchRelevantTyphoonSummary().catch((err) => {
+      console.error('[台風要約取得失敗]', err.message);
+      return null;
+    });
+    await broadcastMessage(createApproachFlex(summary));
     typhoonState.approachNotified = true;
     typhoonState.passedNotified = false;
     typhoonState.notifiedAt = new Date();
@@ -168,11 +240,14 @@ async function broadcastMessage(flexMessage) {
 }
 
 // ─── Flexメッセージ: 台風接近 ──────────────────────────────────────────────────
-function createApproachFlex() {
+function createApproachFlex(summary) {
   const areas = Object.values(MONITOR_AREAS).join('・');
+  const altText = summary
+    ? `【緊急警報】台風第${summary.num}号「${summary.name}」が接近中`
+    : '【緊急警報】台風が九州・宮崎エリアに接近中';
   return {
     type: 'flex',
-    altText: `【緊急警報】台風が九州・宮崎エリアに接近中`,
+    altText,
     contents: {
       type: 'bubble',
       size: 'mega',
@@ -206,6 +281,34 @@ function createApproachFlex() {
         spacing: 'md',
         paddingAll: '20px',
         contents: [
+          ...(summary
+            ? [
+                {
+                  type: 'box',
+                  layout: 'vertical',
+                  backgroundColor: '#FFF5F5',
+                  cornerRadius: '8px',
+                  paddingAll: '12px',
+                  contents: [
+                    {
+                      type: 'text',
+                      text: `台風第${summary.num}号「${summary.name}」`,
+                      weight: 'bold',
+                      size: 'md',
+                      color: '#CC0000',
+                    },
+                    {
+                      type: 'text',
+                      text: summary.text,
+                      size: 'sm',
+                      color: '#333333',
+                      wrap: true,
+                      margin: 'sm',
+                    },
+                  ],
+                },
+              ]
+            : []),
           {
             type: 'box',
             layout: 'horizontal',
