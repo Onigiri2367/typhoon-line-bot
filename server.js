@@ -26,7 +26,8 @@ const TYPHOON_WARNING_CODES = new Set([4, 5, 6, 7]);
 
 // ─── 台風状態管理 ─────────────────────────────────────────────────────────────
 let typhoonState = {
-  approachNotified: false,
+  earlyNotified: false,   // ①予報段階の早期お知らせを送信済みか
+  approachNotified: false, // ②暴風警報発令時の緊急通知を送信済みか
   passedNotified: false,
   notifiedAt: null,
 };
@@ -47,6 +48,7 @@ app.get('/admin/status', (req, res) => {
     status: 'running',
     monitorAreas: Object.values(MONITOR_AREAS),
     typhoonState: {
+      earlyNotified: typhoonState.earlyNotified,
       approachNotified: typhoonState.approachNotified,
       passedNotified: typhoonState.passedNotified,
       notifiedAt: typhoonState.notifiedAt,
@@ -79,7 +81,7 @@ app.get('/admin/test/passed', async (req, res) => {
   }
 });
 
-// 気象庁の実データから現在の台風情報を取得してテスト送信
+// 気象庁の実データから現在の台風情報を取得してテスト送信（②緊急通知の体裁）
 app.get('/admin/test/current', async (req, res) => {
   try {
     const summary = await fetchRelevantTyphoonSummary();
@@ -88,6 +90,20 @@ app.get('/admin/test/current', async (req, res) => {
     }
     await broadcastMessage(createApproachFlex(summary));
     res.json({ success: true, message: '現在の台風情報を送信しました', summary });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 気象庁の実データから①早期お知らせ（予報段階）をテスト送信
+app.get('/admin/test/early', async (req, res) => {
+  try {
+    const summary = await fetchRelevantTyphoonSummary();
+    if (!summary) {
+      return res.json({ success: false, message: '現在、宮崎県に関係する台風は発生していません' });
+    }
+    await broadcastMessage(createEarlyForecastFlex(summary));
+    res.json({ success: true, message: '台風の早期お知らせを送信しました', summary });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -206,8 +222,21 @@ async function checkTyphoon() {
     }
   }
 
+  // ①予報段階：宮崎に関係する台風が発生していれば、警報の前に早期お知らせを1回送る
+  if (!typhoonState.earlyNotified && !typhoonState.approachNotified) {
+    const summary = await fetchRelevantTyphoonSummary().catch((err) => {
+      console.error('[台風要約取得失敗]', err.message);
+      return null;
+    });
+    if (summary) {
+      await broadcastMessage(createEarlyForecastFlex(summary));
+      typhoonState.earlyNotified = true;
+      console.log(`[${now()}] 台風早期お知らせを送信しました`);
+    }
+  }
+
   if (approachDetected && !typhoonState.approachNotified) {
-    // 台風接近 → 接近メッセージ送信（実況データから要約文を生成）
+    // ②台風接近 → 暴風警報発令時の緊急メッセージ送信（実況データから要約文を生成）
     const summary = await fetchRelevantTyphoonSummary().catch((err) => {
       console.error('[台風要約取得失敗]', err.message);
       return null;
@@ -226,7 +255,7 @@ async function checkTyphoon() {
 
     // 24時間後に状態リセット
     setTimeout(() => {
-      typhoonState = { approachNotified: false, passedNotified: false, notifiedAt: null };
+      typhoonState = { earlyNotified: false, approachNotified: false, passedNotified: false, notifiedAt: null };
       console.log(`[${now()}] 台風状態をリセットしました`);
     }, 24 * 60 * 60 * 1000);
   }
@@ -238,6 +267,127 @@ async function broadcastMessage(flexMessage) {
   } catch (err) {
     console.error('[送信エラー]', err.message);
   }
+}
+
+// ─── Flexメッセージ: 台風予報（早期お知らせ） ──────────────────────────────────────
+function createEarlyForecastFlex(summary) {
+  return {
+    type: 'flex',
+    altText: `【台風情報】台風第${summary.num}号「${summary.name}」の進路にご注意ください`,
+    contents: {
+      type: 'bubble',
+      size: 'mega',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: '#F59E0B',
+        paddingAll: '20px',
+        contents: [
+          {
+            type: 'text',
+            text: '🌀 台風接近のおそれ',
+            color: '#FFFFFF',
+            size: 'xl',
+            weight: 'bold',
+            align: 'center',
+          },
+          {
+            type: 'text',
+            text: '現時点の予報です。今後の情報にご注意ください',
+            color: '#FFF3DD',
+            size: 'sm',
+            align: 'center',
+            margin: 'sm',
+          },
+        ],
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        paddingAll: '20px',
+        contents: [
+          {
+            type: 'box',
+            layout: 'vertical',
+            backgroundColor: '#FFFBEB',
+            cornerRadius: '8px',
+            paddingAll: '12px',
+            contents: [
+              {
+                type: 'text',
+                text: `台風第${summary.num}号「${summary.name}」`,
+                weight: 'bold',
+                size: 'md',
+                color: '#B45309',
+              },
+              {
+                type: 'text',
+                text: summary.text,
+                size: 'sm',
+                color: '#333333',
+                wrap: true,
+                margin: 'sm',
+              },
+            ],
+          },
+          { type: 'separator', margin: 'md' },
+          {
+            type: 'text',
+            text: '早めの備えとして、屋根や外まわりの気になる箇所があれば、台風が来る前にご相談いただくことも可能です。',
+            size: 'sm',
+            color: '#444444',
+            wrap: true,
+            margin: 'md',
+          },
+          {
+            type: 'box',
+            layout: 'vertical',
+            backgroundColor: '#EEF4FF',
+            cornerRadius: '8px',
+            paddingAll: '12px',
+            margin: 'md',
+            contents: [
+              {
+                type: 'text',
+                text: '📸 台風前・台風後のドローン撮影について',
+                size: 'sm',
+                weight: 'bold',
+                color: '#0055CC',
+              },
+              {
+                type: 'text',
+                text: '台風前後の屋根の状態を記録しておくことで、被害時の保険申請がスムーズになります。お気軽にこのLINEでお問い合わせください。',
+                size: 'xs',
+                color: '#333333',
+                wrap: true,
+                margin: 'sm',
+              },
+            ],
+          },
+        ],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        paddingAll: '16px',
+        contents: [
+          {
+            type: 'button',
+            action: {
+              type: 'uri',
+              label: '気象庁 台風情報',
+              uri: 'https://www.jma.go.jp/bosai/typhoon/',
+            },
+            style: 'primary',
+            color: '#F59E0B',
+            height: 'sm',
+          },
+        ],
+      },
+    },
+  };
 }
 
 // ─── Flexメッセージ: 台風接近 ──────────────────────────────────────────────────
