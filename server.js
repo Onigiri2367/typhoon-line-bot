@@ -169,7 +169,8 @@ async function fetchRelevantTyphoonSummary() {
     );
     if (!nearMiyazaki) continue; // この台風は宮崎と無関係なのでスキップ
 
-    const num = title.typhoonNumber;
+    // typhoonNumberは「2607」=2026年7号のような年+号の形式なので下2桁を号番号として使う
+    const num = String(parseInt(title.typhoonNumber.slice(-2), 10));
     const name = title.name?.jp || '';
     const loc = analysis.location || '海上';
     const pressure = analysis.pressure;
